@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { doneBy, freeSlots, nextOpenDays } from "@/lib/schedule";
+import { doneBy, freeSlotsForDuration, nextOpenDays } from "@/lib/schedule";
 import { createBooking, fetchTakenSlots } from "@/lib/data";
 
 const STEPS = ["Style", "Date & time", "Confirm"];
@@ -21,7 +21,7 @@ export default function BookingFlow({ services, content }) {
     preselect && services.some((s) => s.id === preselect) ? preselect : services[0]?.id
   );
   const [showAll, setShowAll] = useState(false);
-  const [days, setDays] = useState(null);
+  const [taken, setTaken] = useState(null);
   const [date, setDate] = useState(null);
   const [time, setTime] = useState(null);
   const [name, setName] = useState("");
@@ -32,25 +32,40 @@ export default function BookingFlow({ services, content }) {
   const [booking, setBooking] = useState(null);
 
   const service = useMemo(() => services.find((s) => s.id === serviceId), [services, serviceId]);
-  const selectedDay = useMemo(() => days?.find((d) => d.date === date), [days, date]);
+  const openDays = useMemo(() => nextOpenDays(14), []);
   const tel = content.phone.replace(/\D/g, "");
 
   const loadAvailability = useCallback(async () => {
-    const openDays = nextOpenDays(14);
-    const taken = await fetchTakenSlots(openDays[0].date, openDays[openDays.length - 1].date);
-    const withSlots = openDays.map((d) => ({
-      ...d,
-      slots: d.open ? freeSlots(d.date, taken) : [],
-    }));
-    setDays(withSlots);
-    const first = withSlots.find((x) => x.open && x.slots.length);
-    if (first) setDate((cur) => cur || first.date);
-    return withSlots;
-  }, []);
+    const t = await fetchTakenSlots(openDays[0].date, openDays[openDays.length - 1].date);
+    setTaken(t);
+    return t;
+  }, [openDays]);
 
   useEffect(() => {
     loadAvailability().catch((err) => console.error("availability:", err));
   }, [loadAvailability]);
+
+  // Free start times depend on the chosen style's duration: a 5-hr set only
+  // offers starts where all covered slots are open.
+  const days = useMemo(() => {
+    if (!taken) return null;
+    return openDays.map((d) => ({
+      ...d,
+      slots: d.open ? freeSlotsForDuration(d.date, taken, service?.hours) : [],
+    }));
+  }, [openDays, taken, service]);
+
+  const selectedDay = useMemo(() => days?.find((d) => d.date === date), [days, date]);
+
+  // default to the first bookable day; drop a picked time that stopped fitting
+  useEffect(() => {
+    if (!days) return;
+    const first = days.find((x) => x.open && x.slots.length);
+    if (first) setDate((cur) => cur || first.date);
+  }, [days]);
+  useEffect(() => {
+    if (time && selectedDay && !selectedDay.slots.includes(time)) setTime(null);
+  }, [time, selectedDay]);
 
   const popular = showAll ? services : services.slice(0, 3);
   const finish = time && service ? doneBy(time, service.hours) : "";

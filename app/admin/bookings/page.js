@@ -3,16 +3,25 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   adminCreateBooking,
+  blockDateRange,
   blockSlot as blockSlotDoc,
   fetchAllBookings,
   fetchAllServices,
   fetchSlotsForDates,
   rescheduleBooking,
   setBookingStatus,
+  unblockDay,
   unblockSlot,
 } from "@/lib/admin-data";
 import { fetchTakenSlots } from "@/lib/data";
-import { BASE_SLOTS, CLOSED_DAYS, freeSlots, nextOpenDays, timeToMinutes } from "@/lib/schedule";
+import {
+  BASE_SLOTS,
+  CLOSED_DAYS,
+  coveredSlots,
+  freeSlotsForDuration,
+  nextOpenDays,
+  timeToMinutes,
+} from "@/lib/schedule";
 
 const BADGE = {
   confirmed: ["badge badge-confirmed", "Confirmed"],
@@ -34,21 +43,26 @@ function startOfWeek(d) {
   return x;
 }
 
-// Date + time picker over the next 3 weeks of open days, taken slots removed.
-function SlotPicker({ date, time, onPick, excludeSlotId }) {
+// Date + time picker over the next 3 weeks of open days. Only offers start
+// times where a booking of `hours` fits entirely in free slots.
+function SlotPicker({ date, time, onPick, hours = 1, excludeSlotIds = [] }) {
   const [days] = useState(() => nextOpenDays(21).filter((d) => d.open));
   const [taken, setTaken] = useState(null);
+  const excludeKey = excludeSlotIds.join(",");
 
   useEffect(() => {
     fetchTakenSlots(days[0].date, days[days.length - 1].date)
       .then((t) => {
-        if (excludeSlotId) t.delete(excludeSlotId); // the booking's own current slot stays pickable
+        // a booking's own current slots stay pickable when rescheduling
+        for (const id of excludeKey.split(",")) t.delete(id);
         setTaken(t);
       })
       .catch(console.error);
-  }, [days, excludeSlotId]);
+  }, [days, excludeKey]);
 
-  const options = taken ? days.map((d) => ({ ...d, slots: freeSlots(d.date, taken) })) : [];
+  const options = taken
+    ? days.map((d) => ({ ...d, slots: freeSlotsForDuration(d.date, taken, hours) }))
+    : [];
   const selected = options.find((d) => d.date === date);
 
   if (!taken) return <p style={{ margin: 0, color: "var(--taupe)", fontSize: 14 }}>Loading availability…</p>;
@@ -137,15 +151,23 @@ function AddBookingModal({ services, onClose, onDone }) {
         </div>
         <label className="field">
           Service
-          <select value={form.serviceId} onChange={(e) => setForm({ ...form, serviceId: e.target.value })}>
+          <select
+            value={form.serviceId}
+            onChange={(e) => setForm({ ...form, serviceId: e.target.value, time: null })}
+          >
             {services.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name} · {s.price}
+                {s.name} · {s.price} · {s.duration}
               </option>
             ))}
           </select>
         </label>
-        <SlotPicker date={form.date} time={form.time} onPick={(date, time) => setForm({ ...form, date, time })} />
+        <SlotPicker
+          date={form.date}
+          time={form.time}
+          hours={services.find((s) => s.id === form.serviceId)?.hours}
+          onPick={(date, time) => setForm({ ...form, date, time })}
+        />
         <label className="field">
           Notes <span className="opt">(optional)</span>
           <input type="text" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
@@ -165,22 +187,33 @@ function AddBookingModal({ services, onClose, onDone }) {
 }
 
 function BlockTimeModal({ onClose, onDone }) {
+  const todayIso = iso(new Date());
+  const [mode, setMode] = useState("days"); // 'days' | 'slot'
   const [pick, setPick] = useState({ date: null, time: null });
+  const [range, setRange] = useState({ from: "", to: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   async function save() {
-    if (!pick.date || !pick.time) {
-      setError("Pick a day and time to block.");
-      return;
-    }
+    setError("");
     setBusy(true);
     try {
-      await blockSlotDoc(pick.date, pick.time);
-      onDone(`${pick.time} blocked off — clients can't book it.`);
+      if (mode === "slot") {
+        if (!pick.date || !pick.time) throw new Error("Pick a day and time to block.");
+        await blockSlotDoc(pick.date, pick.time);
+        onDone(`${pick.time} blocked off — clients can't book it.`);
+        return;
+      }
+      const from = range.from;
+      const to = range.to || range.from;
+      if (!from) throw new Error("Pick at least a starting day.");
+      if (to < from) throw new Error("The end day is before the start day.");
+      if (from < todayIso) throw new Error("That range starts in the past.");
+      const { days } = await blockDateRange(from, to);
+      onDone(`${days} day${days === 1 ? "" : "s"} blocked off — clients can't book them.`);
     } catch (err) {
       console.error(err);
-      setError("Couldn't block that slot.");
+      setError(err.message || "Couldn't block that time.");
       setBusy(false);
     }
   }
@@ -192,7 +225,56 @@ function BlockTimeModal({ onClose, onDone }) {
         <p style={{ margin: 0, fontSize: 14.5, color: "var(--taupe)" }}>
           Blocked times disappear from the public booking flow. Unblock them any time from the day view.
         </p>
-        <SlotPicker date={pick.date} time={pick.time} onPick={(date, time) => setPick({ date, time })} />
+        <div style={{ display: "flex", gap: 8 }} role="tablist" aria-label="What to block">
+          <button
+            role="tab"
+            aria-selected={mode === "days"}
+            className={`chip${mode === "days" ? " active" : ""}`}
+            style={{ minHeight: 40, padding: "9px 18px", fontSize: 13.5 }}
+            onClick={() => setMode("days")}
+          >
+            Whole days
+          </button>
+          <button
+            role="tab"
+            aria-selected={mode === "slot"}
+            className={`chip${mode === "slot" ? " active" : ""}`}
+            style={{ minHeight: 40, padding: "9px 18px", fontSize: 13.5 }}
+            onClick={() => setMode("slot")}
+          >
+            Single time slot
+          </button>
+        </div>
+        {mode === "days" ? (
+          <>
+            <div className="modal-row">
+              <label className="field">
+                First day off
+                <input
+                  type="date"
+                  min={todayIso}
+                  value={range.from}
+                  onChange={(e) => setRange({ ...range, from: e.target.value })}
+                />
+              </label>
+              <label className="field">
+                Last day off <span className="opt">(leave empty for one day)</span>
+                <input
+                  type="date"
+                  min={range.from || todayIso}
+                  value={range.to}
+                  onChange={(e) => setRange({ ...range, to: e.target.value })}
+                />
+              </label>
+            </div>
+            <p style={{ margin: 0, fontSize: 13.5, color: "var(--taupe)" }}>
+              Every open day in the range is fully blocked — existing appointments are untouched, so
+              cancel or reschedule those separately.
+            </p>
+          </>
+        ) : (
+          <SlotPicker date={pick.date} time={pick.time} onPick={(date, time) => setPick({ date, time })} />
+        )}
         {error && <div className="error-box">{error}</div>}
         <div className="modal-acts">
           <button className="btn btn-outline" onClick={onClose} disabled={busy}>
@@ -238,8 +320,13 @@ function RescheduleModal({ booking, onClose, onDone }) {
         <SlotPicker
           date={pick.date}
           time={pick.time}
+          hours={booking.hours}
           onPick={(date, time) => setPick({ date, time })}
-          excludeSlotId={`${booking.date}_${booking.time}`}
+          excludeSlotIds={
+            booking.slotIds?.length
+              ? booking.slotIds
+              : coveredSlots(booking.time, booking.hours).map((t) => `${booking.date}_${t}`)
+          }
         />
         {error && <div className="error-box">{error}</div>}
         <div className="modal-acts">
@@ -258,7 +345,7 @@ function RescheduleModal({ booking, onClose, onDone }) {
 export default function AdminBookings() {
   const [bookings, setBookings] = useState(null);
   const [services, setServices] = useState([]);
-  const [blocked, setBlocked] = useState([]);
+  const [weekSlots, setWeekSlots] = useState([]);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [selected, setSelected] = useState(() => iso(new Date()));
   const [modal, setModal] = useState(null); // 'add' | 'block' | booking object
@@ -272,7 +359,7 @@ export default function AdminBookings() {
       fetchSlotsForDates(iso(weekStart), iso(weekEnd)),
     ]);
     setBookings(b);
-    setBlocked(slots.filter((s) => s.status === "blocked"));
+    setWeekSlots(slots);
   }, [weekStart]);
 
   useEffect(() => {
@@ -315,11 +402,9 @@ export default function AdminBookings() {
     .filter((b) => b.date === selected)
     .sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
 
-  const dayBlocked = blocked.filter((b) => b.date === selected);
-  const takenTimes = new Set([
-    ...dayBookings.filter((b) => b.status !== "cancelled").map((b) => b.time),
-    ...dayBlocked.map((b) => b.time),
-  ]);
+  const dayBlocked = weekSlots.filter((s) => s.date === selected && s.status === "blocked");
+  // slot markers carry the full duration coverage of each booking
+  const takenTimes = new Set(weekSlots.filter((s) => s.date === selected).map((s) => s.time));
   const selectedDate = new Date(selected + "T00:00:00");
   const selectedClosed = CLOSED_DAYS.includes(selectedDate.getDay());
   const dayFree = selectedClosed ? [] : BASE_SLOTS.filter((s) => !takenTimes.has(s));
@@ -465,6 +550,19 @@ export default function AdminBookings() {
             </div>
           </div>
         ))}
+        {dayBlocked.length > 1 && (
+          <button
+            className="btn btn-outline btn-sm"
+            style={{ alignSelf: "flex-start" }}
+            onClick={async () => {
+              const n = await unblockDay(selected);
+              await reload();
+              notify(`${n} blocked slot${n === 1 ? "" : "s"} reopened.`);
+            }}
+          >
+            Unblock whole day
+          </button>
+        )}
 
         {selectedClosed ? (
           <div className="free-slot-box">The studio is closed this day.</div>
