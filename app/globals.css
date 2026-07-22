@@ -487,6 +487,44 @@ button { font-family: var(--sans); }
   flex: none;
 }
 
+.cal { display: flex; flex-direction: column; gap: 12px; max-width: 440px; }
+.cal-head { display: flex; justify-content: space-between; align-items: center; }
+.cal-month { font-size: 17px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.cal-dow {
+  text-align: center;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--taupe);
+  padding: 4px 0;
+}
+.cal-day {
+  aspect-ratio: 1;
+  min-height: 44px;
+  border-radius: 10px;
+  border: 1.5px solid rgba(61, 43, 31, 0.15);
+  background: #fff;
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--espresso);
+  cursor: pointer;
+}
+.cal-day:hover:not(:disabled):not(.selected) { border-color: var(--bronze); color: var(--bronze); }
+.cal-day:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: transparent;
+  border-color: transparent;
+}
+.cal-day.selected {
+  background: var(--bronze);
+  border-color: var(--bronze);
+  color: #fff;
+  font-weight: 700;
+}
+
 .day-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .day-cell {
   width: 76px;

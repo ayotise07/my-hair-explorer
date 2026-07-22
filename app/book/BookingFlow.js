@@ -1,16 +1,57 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { doneBy, freeSlotsForDuration, nextOpenDays } from "@/lib/schedule";
+import { doneBy, freeSlotsForDuration, isOpen } from "@/lib/schedule";
 import { createBooking, fetchSchedule, fetchTakenSlots } from "@/lib/data";
 
 const STEPS = ["Style", "Date & time", "Confirm"];
+const BOOKING_HORIZON_DAYS = 180;
+const DOW = ["S", "M", "T", "W", "T", "F", "S"];
 
 function Thumb({ service, className }) {
   if (service?.image) return <img src={service.image} alt="" className={className} />;
   return <span className={`thumb-ph ${className || ""}`}>photo</span>;
+}
+
+function isoPlusDays(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 10);
+}
+
+function shiftMonth(key, delta) {
+  const [y, m] = key.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthLabel(key) {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
+function lastDayOfMonth(key) {
+  const [y, m] = key.split("-").map(Number);
+  return `${key}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+}
+
+function fmtShort(iso) {
+  return new Date(iso + "T00:00:00").toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function fmtLong(iso) {
+  return new Date(iso + "T00:00:00").toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
 }
 
 export default function BookingFlow({ services, content }) {
@@ -22,7 +63,8 @@ export default function BookingFlow({ services, content }) {
   );
   const [showAll, setShowAll] = useState(false);
   const [schedule, setSchedule] = useState(null);
-  const [taken, setTaken] = useState(null);
+  const [monthKey, setMonthKey] = useState(null); // "2026-07" — calendar page shown
+  const [takenSets, setTakenSets] = useState({}); // monthKey -> Set of taken slot ids
   const [date, setDate] = useState(null);
   const [time, setTime] = useState(null);
   const [name, setName] = useState("");
@@ -33,45 +75,79 @@ export default function BookingFlow({ services, content }) {
   const [booking, setBooking] = useState(null);
 
   const service = useMemo(() => services.find((s) => s.id === serviceId), [services, serviceId]);
-  const openDays = useMemo(() => (schedule ? nextOpenDays(schedule, 14) : null), [schedule]);
   const tel = content.phone.replace(/\D/g, "");
+  const minIso = useMemo(() => isoPlusDays(1), []); // bookings start tomorrow
+  const maxIso = useMemo(() => isoPlusDays(BOOKING_HORIZON_DAYS), []);
 
   useEffect(() => {
     fetchSchedule().then(setSchedule).catch((err) => console.error("schedule:", err));
   }, []);
 
-  const loadAvailability = useCallback(async () => {
-    if (!openDays) return null;
-    const t = await fetchTakenSlots(openDays[0].date, openDays[openDays.length - 1].date);
-    setTaken(t);
-    return t;
-  }, [openDays]);
+  useEffect(() => {
+    if (schedule && !monthKey) setMonthKey(minIso.slice(0, 7));
+  }, [schedule, monthKey, minIso]);
+
+  // One availability fetch per displayed month, cached in a ref so the
+  // check is synchronous (state updaters run too late for that).
+  const takenRef = useRef({});
+  const loadMonth = useCallback(async (key, force = false) => {
+    if (!key || (!force && takenRef.current[key])) return;
+    const t = await fetchTakenSlots(`${key}-01`, lastDayOfMonth(key));
+    takenRef.current = { ...takenRef.current, [key]: t };
+    setTakenSets(takenRef.current);
+  }, []);
 
   useEffect(() => {
-    loadAvailability().catch((err) => console.error("availability:", err));
-  }, [loadAvailability]);
+    loadMonth(monthKey).catch((err) => console.error("availability:", err));
+  }, [monthKey, loadMonth]);
 
-  // Free start times depend on the owner's weekly hours and the chosen
-  // style's duration: a 5-hr set only offers starts where it fits entirely.
-  const days = useMemo(() => {
-    if (!taken || !openDays) return null;
-    return openDays.map((d) => ({
-      ...d,
-      slots: d.open ? freeSlotsForDuration(schedule, d.date, taken, service?.hours) : [],
-    }));
-  }, [openDays, schedule, taken, service]);
+  // Calendar cells for the shown month. A day is bookable when it's within
+  // the horizon, the studio is open, and the chosen style's full duration
+  // fits around existing bookings.
+  const calendar = useMemo(() => {
+    if (!schedule || !monthKey) return null;
+    const [y, m] = monthKey.split("-").map(Number);
+    const taken = takenSets[monthKey];
+    const cells = Array.from({ length: new Date(y, m - 1, 1).getDay() }, () => null);
+    const daysInMonth = new Date(y, m, 0).getDate();
+    for (let d = 1; d <= daysInMonth; d++) {
+      const iso = `${monthKey}-${String(d).padStart(2, "0")}`;
+      const inRange = iso >= minIso && iso <= maxIso;
+      const slots =
+        inRange && taken && isOpen(schedule, iso)
+          ? freeSlotsForDuration(schedule, iso, taken, service?.hours)
+          : [];
+      cells.push({ iso, num: d, bookable: slots.length > 0, slots });
+    }
+    return cells;
+  }, [schedule, monthKey, takenSets, service, minIso, maxIso]);
 
-  const selectedDay = useMemo(() => days?.find((d) => d.date === date), [days, date]);
+  const monthLoaded = !!(monthKey && takenSets[monthKey]);
 
-  // default to the first bookable day; drop a picked time that stopped fitting
+  // Default to the first bookable day; if the whole month is full, page
+  // forward automatically until something is free (within the horizon).
   useEffect(() => {
-    if (!days) return;
-    const first = days.find((x) => x.open && x.slots.length);
-    if (first) setDate((cur) => cur || first.date);
-  }, [days]);
+    if (!calendar || !monthLoaded || date) return;
+    const first = calendar.find((c) => c?.bookable);
+    if (first) {
+      setDate(first.iso);
+    } else if (monthKey < maxIso.slice(0, 7)) {
+      setMonthKey(shiftMonth(monthKey, 1));
+    }
+  }, [calendar, monthLoaded, date, monthKey, maxIso]);
+
+  // Times for the selected day (may live in a previously loaded month).
+  const selectedSlots = useMemo(() => {
+    if (!date || !schedule) return [];
+    const taken = takenSets[date.slice(0, 7)];
+    if (!taken) return [];
+    return freeSlotsForDuration(schedule, date, taken, service?.hours);
+  }, [date, schedule, takenSets, service]);
+
+  // drop a picked time that stopped fitting (service change, refetch)
   useEffect(() => {
-    if (time && selectedDay && !selectedDay.slots.includes(time)) setTime(null);
-  }, [time, selectedDay]);
+    if (time && date && takenSets[date.slice(0, 7)] && !selectedSlots.includes(time)) setTime(null);
+  }, [time, date, takenSets, selectedSlots]);
 
   const popular = showAll ? services : services.slice(0, 3);
   const finish = time && service ? doneBy(time, service.hours) : "";
@@ -99,7 +175,7 @@ export default function BookingFlow({ services, content }) {
       console.error("booking:", err);
       if (err.code === "slot-taken") {
         setError(err.message);
-        await loadAvailability();
+        await loadMonth(date.slice(0, 7), true);
         setTime(null);
         setStep(2);
       } else {
@@ -137,7 +213,7 @@ export default function BookingFlow({ services, content }) {
                 <div className="row">
                   <span>When</span>
                   <strong>
-                    {selectedDay?.short} · {booking.time}
+                    {fmtShort(booking.date)} · {booking.time}
                   </strong>
                 </div>
                 <div className="row">
@@ -276,30 +352,70 @@ export default function BookingFlow({ services, content }) {
 
           {step === 2 && (
             <>
-              <div className="day-row">
-                {(days || []).slice(0, 7).map((d) => (
-                  <button
-                    key={d.date}
-                    className={`day-cell${d.date === date ? " selected" : ""}${!d.open || !d.slots.length ? " closed" : ""}`}
-                    disabled={!d.open || !d.slots.length}
-                    onClick={() => {
-                      setDate(d.date);
-                      setTime(null);
-                    }}
-                  >
-                    <div className="dow">{d.day}</div>
-                    <div className="num">{d.num}</div>
-                  </button>
-                ))}
-              </div>
-              {!days && <p className="lede">Loading availability…</p>}
-              {selectedDay && (
+              {calendar ? (
+                <div className="cal">
+                  <div className="cal-head">
+                    <button
+                      className="week-nav"
+                      aria-label="Previous month"
+                      disabled={monthKey <= minIso.slice(0, 7)}
+                      onClick={() => setMonthKey(shiftMonth(monthKey, -1))}
+                    >
+                      ←
+                    </button>
+                    <strong className="cal-month">{monthLabel(monthKey)}</strong>
+                    <button
+                      className="week-nav"
+                      aria-label="Next month"
+                      disabled={monthKey >= maxIso.slice(0, 7)}
+                      onClick={() => setMonthKey(shiftMonth(monthKey, 1))}
+                    >
+                      →
+                    </button>
+                  </div>
+                  <div className="cal-grid">
+                    {DOW.map((d, i) => (
+                      <span key={i} className="cal-dow" aria-hidden="true">
+                        {d}
+                      </span>
+                    ))}
+                    {calendar.map((c, i) =>
+                      c === null ? (
+                        <span key={`pad-${i}`} />
+                      ) : (
+                        <button
+                          key={c.iso}
+                          className={`cal-day${c.iso === date ? " selected" : ""}`}
+                          disabled={!c.bookable}
+                          aria-label={`${fmtLong(c.iso)}${c.bookable ? "" : " — unavailable"}`}
+                          onClick={() => {
+                            setDate(c.iso);
+                            setTime(null);
+                          }}
+                        >
+                          {c.num}
+                        </button>
+                      )
+                    )}
+                  </div>
+                  {!monthLoaded && <p className="lede">Checking availability…</p>}
+                  {monthLoaded && (
+                    <p style={{ margin: 0, fontSize: 13.5, color: "var(--taupe)" }}>
+                      Greyed-out days are closed, fully booked, or don&apos;t have a long enough
+                      opening for this style{service ? ` (${service.duration})` : ""}.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="lede">Loading availability…</p>
+              )}
+              {date && selectedSlots.length > 0 && (
                 <div>
                   <p style={{ margin: "0 0 12px", fontWeight: 700, fontSize: 15, color: "var(--taupe)" }}>
-                    {selectedDay.label} — available start times
+                    {fmtLong(date)} — available start times
                   </p>
                   <div className="slot-grid">
-                    {selectedDay.slots.map((s) => (
+                    {selectedSlots.map((s) => (
                       <button key={s} className={`slot${s === time ? " selected" : ""}`} onClick={() => setTime(s)}>
                         {s}
                       </button>
@@ -378,7 +494,7 @@ export default function BookingFlow({ services, content }) {
               <div className="summary-rows">
                 <div className="row">
                   <span>Date</span>
-                  <strong>{selectedDay ? selectedDay.short : "—"}</strong>
+                  <strong>{date ? fmtShort(date) : "—"}</strong>
                 </div>
                 <div className="row">
                   <span>Time</span>
