@@ -74,9 +74,38 @@ npm run dev        # http://localhost:3000
   offered if it finishes by closing. Bookings claim every start slot they overlap, so long styles
   block their whole duration. One-off time off is blocked per-slot or per-day-range from Bookings.
 
+## Payments
+
+Customers choose at the last booking step:
+
+- **Pay online** — the deposit is charged by card through **Stripe Checkout**. The server
+  (`app/api/checkout`) claims the slots and creates the booking as `awaiting-checkout`, then
+  redirects to Stripe; the webhook (`app/api/stripe-webhook`) marks it `deposit-paid` on success or
+  releases the slots if checkout expires (30 min) or is cancelled. The payment record (session,
+  amount, time) is stored on the booking.
+- **Pay in person** — the appointment is reserved immediately with status **`payment-pending`**
+  (Zelle or cash only, stated in the flow and on the confirmation). The admin's Bookings page shows
+  a "Payment pending" badge and a **Mark paid** button.
+
+Stripe setup:
+
+1. Create the secrets:
+   `firebase apphosting:secrets:set STRIPE_SECRET_KEY` and
+   `firebase apphosting:secrets:set STRIPE_WEBHOOK_SECRET` (grant access to the backend when
+   prompted). `apphosting.yaml` wires them to the runtime and turns on
+   `NEXT_PUBLIC_STRIPE_ENABLED`.
+2. In the Stripe dashboard, add a webhook endpoint
+   `https://<your-domain>/api/stripe-webhook` with events `checkout.session.completed` and
+   `checkout.session.expired`; its signing secret is `STRIPE_WEBHOOK_SECRET`.
+3. Local dev: put `sk_test_…` keys in `.env.local`, set `NEXT_PUBLIC_STRIPE_ENABLED=true`, and run
+   `stripe listen --forward-to localhost:3000/api/stripe-webhook`. The API routes need Google
+   Application Default Credentials locally (`gcloud auth application-default login`); on App
+   Hosting they use the built-in service account automatically.
+
+Until Stripe is configured, the online option is hidden and everything books as pay-in-person.
+
 ## Notes
 
 - The web Firebase config in `lib/firebase.js` is public by design; all protection comes from
   security rules + App Check.
-- Booking "deposit" is recorded but not charged — payment integration (e.g. Stripe) is a follow-up.
 - Brand tokens are CSS variables at the top of `app/globals.css`.

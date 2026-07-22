@@ -74,7 +74,13 @@ service cloud.firestore {
         && isStr(request.resource.data.serviceName, 120)
         && request.resource.data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && request.resource.data.time.matches('^[0-9]{1,2}:[0-9]{2} (AM|PM)$')
-        && request.resource.data.status == 'deposit-paid'
+        // clients may only self-book the pay-in-person flow; online payments
+        // are created server-side via the Admin SDK after Stripe checkout
+        && (
+          (request.resource.data.status == 'payment-pending'
+            && request.resource.data.paymentMethod == 'in-person')
+          || request.resource.data.status == 'deposit-paid'
+        )
       );
       allow read, update, delete: if isAdmin();
     }

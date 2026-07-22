@@ -14,6 +14,8 @@ import {
 const BADGE = {
   confirmed: ["badge badge-confirmed", "Confirmed"],
   "deposit-paid": ["badge badge-deposit", "Deposit paid"],
+  "payment-pending": ["badge badge-reschedule", "Payment pending"],
+  "awaiting-checkout": ["badge badge-cancelled", "Awaiting card payment"],
   "reschedule-requested": ["badge badge-reschedule", "Reschedule req."],
   cancelled: ["badge badge-cancelled", "Cancelled"],
 };
@@ -51,7 +53,9 @@ export default function AdminOverview() {
 
   const now = new Date();
   const todayIso = now.toISOString().slice(0, 10);
-  const active = data.bookings.filter((b) => b.status !== "cancelled");
+  const active = data.bookings.filter(
+    (b) => b.status !== "cancelled" && b.status !== "awaiting-checkout"
+  );
   const upcoming = active
     .filter((b) => b.date >= todayIso)
     .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
@@ -71,7 +75,9 @@ export default function AdminOverview() {
       const m = String(b.price).match(/\d+/);
       return sum + (m ? parseInt(m[0], 10) : 0);
     }, 0);
-  const deposits = upcoming.reduce((sum, b) => sum + (b.deposit || 0), 0);
+  const deposits = upcoming
+    .filter((b) => b.status === "deposit-paid" || b.payment)
+    .reduce((sum, b) => sum + (b.deposit || 0), 0);
 
   const published = data.reviews.filter((r) => r.status === "published");
   const pending = data.reviews.filter((r) => r.status === "pending");

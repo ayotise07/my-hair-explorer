@@ -1,0 +1,26 @@
+# Firebase App Hosting configuration.
+# Secrets live in Cloud Secret Manager — create them with:
+#   firebase apphosting:secrets:set STRIPE_SECRET_KEY
+#   firebase apphosting:secrets:set STRIPE_WEBHOOK_SECRET
+env:
+  # Server-only Stripe credentials
+  - variable: STRIPE_SECRET_KEY
+    secret: STRIPE_SECRET_KEY
+    availability:
+      - RUNTIME
+  - variable: STRIPE_WEBHOOK_SECRET
+    secret: STRIPE_WEBHOOK_SECRET
+    availability:
+      - RUNTIME
+
+  # Shows the "Pay online" option in the booking flow (baked at build time)
+  - variable: NEXT_PUBLIC_STRIPE_ENABLED
+    value: "true"
+    availability:
+      - BUILD
+
+  # App Check (reCAPTCHA v3) site key
+  - variable: NEXT_PUBLIC_RECAPTCHA_SITE_KEY
+    value: ""
+    availability:
+      - BUILD

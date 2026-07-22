@@ -73,6 +73,11 @@ export default function BookingFlow({ services, content }) {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [booking, setBooking] = useState(null);
+  const stripeEnabled = process.env.NEXT_PUBLIC_STRIPE_ENABLED === "true";
+  const [payMethod, setPayMethod] = useState(stripeEnabled ? "online" : "in-person");
+  const [finalizing, setFinalizing] = useState(
+    () => params.get("paid") === "1" && !!params.get("bid") && !!params.get("session_id")
+  );
 
   const service = useMemo(() => services.find((s) => s.id === serviceId), [services, serviceId]);
   const tel = content.phone.replace(/\D/g, "");
@@ -82,6 +87,46 @@ export default function BookingFlow({ services, content }) {
   useEffect(() => {
     fetchSchedule().then(setSchedule).catch((err) => console.error("schedule:", err));
   }, []);
+
+  // Returning from Stripe Checkout: verify the session and show the
+  // confirmation, or release the held slots if the customer backed out.
+  const handledReturn = useRef(false);
+  useEffect(() => {
+    if (handledReturn.current) return;
+    const bid = params.get("bid");
+    if (!bid) return;
+    handledReturn.current = true;
+    const cleanUrl = () => window.history.replaceState(null, "", "/book");
+    if (params.get("paid") === "1" && params.get("session_id")) {
+      fetch(`/api/checkout?bid=${bid}&session_id=${params.get("session_id")}`)
+        .then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "verify failed");
+          if (data.serviceId) setServiceId(data.serviceId);
+          setBooking(data);
+        })
+        .catch((err) => {
+          console.error("payment verify:", err);
+          setError(
+            "We couldn't confirm your payment automatically — if you were charged, your spot is safe; call us to double-check."
+          );
+          setStep(3);
+        })
+        .finally(() => {
+          setFinalizing(false);
+          cleanUrl();
+        });
+    } else if (params.get("cancelled") === "1") {
+      fetch("/api/checkout", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bid }),
+      }).catch(() => {});
+      setError("Checkout was cancelled — your time was released. Pick a slot to try again.");
+      setStep(2);
+      cleanUrl();
+    }
+  }, [params]);
 
   useEffect(() => {
     if (schedule && !monthKey) setMonthKey(minIso.slice(0, 7));
@@ -161,6 +206,32 @@ export default function BookingFlow({ services, content }) {
     }
     setSubmitting(true);
     try {
+      if (payMethod === "online") {
+        // Server claims the slots, then hands off to Stripe Checkout.
+        const res = await fetch("/api/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            serviceId,
+            date,
+            time,
+            name: name.trim(),
+            phone: phone.trim(),
+            notes,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          if (res.status === 409) {
+            const err = new Error(data.error);
+            err.code = "slot-taken";
+            throw err;
+          }
+          throw new Error(data.error || "Checkout failed.");
+        }
+        window.location.assign(data.url);
+        return; // navigating away — keep the spinner up
+      }
       const data = await createBooking({
         schedule,
         service,
@@ -171,6 +242,7 @@ export default function BookingFlow({ services, content }) {
         notes,
       });
       setBooking(data);
+      setSubmitting(false);
     } catch (err) {
       console.error("booking:", err);
       if (err.code === "slot-taken") {
@@ -179,16 +251,31 @@ export default function BookingFlow({ services, content }) {
         setTime(null);
         setStep(2);
       } else {
-        setError("Something went wrong — please try again, or call us.");
+        setError(err.message || "Something went wrong — please try again, or call us.");
       }
-    } finally {
       setSubmitting(false);
     }
+  }
+
+  /* ── Returning from Stripe: verifying the payment ── */
+  if (finalizing) {
+    return (
+      <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
+        <div style={{ textAlign: "center", color: "var(--taupe)" }}>
+          <h1 style={{ fontSize: 28, color: "var(--espresso)" }}>Confirming your payment…</h1>
+          <p style={{ marginTop: 8 }}>One moment — don&apos;t close this page.</p>
+        </div>
+      </main>
+    );
   }
 
   /* ── Confirmation (3b) ── */
   if (booking) {
     const firstName = booking.client.split(" ")[0];
+    const inPerson = booking.paymentMethod === "in-person";
+    const priceNum = String(booking.price).match(/\d+/)
+      ? parseInt(String(booking.price).match(/\d+/)[0], 10)
+      : 0;
     const mapsUrl = "https://www.google.com/maps/search/?api=1&query=Baltimore%2C%20MD";
     return (
       <main style={{ minHeight: "100vh" }}>
@@ -220,17 +307,42 @@ export default function BookingFlow({ services, content }) {
                   <span>Done by</span>
                   <strong>{doneBy(booking.time, booking.hours)}</strong>
                 </div>
-                <div className="row">
-                  <span>Paid today</span>
-                  <strong className="bronze">${booking.deposit} deposit</strong>
-                </div>
-                <div className="row">
-                  <span>Due at appointment</span>
-                  <strong>${Math.max(0, booking.price.match(/\d+/) ? parseInt(booking.price.match(/\d+/)[0], 10) - booking.deposit : 0)}</strong>
-                </div>
+                {inPerson ? (
+                  <>
+                    <div className="row">
+                      <span>Payment</span>
+                      <strong className="bronze">In person — payment pending</strong>
+                    </div>
+                    <div className="row">
+                      <span>Due at appointment</span>
+                      <strong>{priceNum ? `$${priceNum}` : booking.price}</strong>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="row">
+                      <span>Paid today (card)</span>
+                      <strong className="bronze">${booking.deposit} deposit</strong>
+                    </div>
+                    <div className="row">
+                      <span>Due at appointment</span>
+                      <strong>${Math.max(0, priceNum - booking.deposit)}</strong>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>
+          {inPerson && (
+            <div className="confirm-card" style={{ borderLeft: "3px solid var(--honey)" }}>
+              <strong style={{ fontSize: 15 }}>Paying in person</strong>
+              <p style={{ margin: 0, fontSize: 14.5, lineHeight: 1.6, color: "var(--taupe)" }}>
+                Your appointment is reserved. Payment is collected at the studio —{" "}
+                <strong style={{ color: "var(--espresso)" }}>Zelle or cash only</strong>, no cards in
+                person.
+              </p>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 10 }}>
             <a
               className="btn btn-bronze"
@@ -272,7 +384,7 @@ export default function BookingFlow({ services, content }) {
   const stepLede = [
     "Prices include a consultation, parting and finishing oil.",
     service ? `${service.name} takes ${service.duration} — mornings are recommended.` : "",
-    "Almost done — a small deposit secures your slot.",
+    "Almost done — choose how you'd like to pay.",
   ][step - 1];
 
   return (
@@ -458,6 +570,44 @@ export default function BookingFlow({ services, content }) {
                   placeholder="Sensitive edges, bringing my own hair…"
                 />
               </label>
+
+              <div className="field" role="radiogroup" aria-label="How would you like to pay?">
+                How would you like to pay?
+                {stripeEnabled && service?.deposit > 0 && (
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={payMethod === "online"}
+                    className={`style-option${payMethod === "online" ? " selected" : ""}`}
+                    onClick={() => setPayMethod("online")}
+                  >
+                    <span className="info">
+                      <strong>Pay ${service.deposit} deposit online</strong>
+                      <span className="sub" style={{ display: "block", fontWeight: 400 }}>
+                        Credit / debit card, secure checkout via Stripe. The rest is due at your
+                        appointment.
+                      </span>
+                    </span>
+                    {payMethod === "online" && <span className="check">✓</span>}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={payMethod === "in-person"}
+                  className={`style-option${payMethod === "in-person" ? " selected" : ""}`}
+                  onClick={() => setPayMethod("in-person")}
+                >
+                  <span className="info">
+                    <strong>Pay in person</strong>
+                    <span className="sub" style={{ display: "block", fontWeight: 400 }}>
+                      Nothing due now — pay at your appointment. Zelle or cash only.
+                    </span>
+                  </span>
+                  {payMethod === "in-person" && <span className="check">✓</span>}
+                </button>
+              </div>
+
               {error && <div className="error-box">{error}</div>}
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                 <button className="btn btn-outline" onClick={() => setStep(2)}>
@@ -465,14 +615,17 @@ export default function BookingFlow({ services, content }) {
                 </button>
                 <button className="btn btn-bronze btn-lg" style={{ flex: 1 }} onClick={submit} disabled={submitting}>
                   {submitting
-                    ? "Confirming…"
-                    : service?.deposit
-                      ? `Pay $${service.deposit} deposit & confirm`
-                      : "Confirm booking"}
+                    ? payMethod === "online"
+                      ? "Opening secure checkout…"
+                      : "Confirming…"
+                    : payMethod === "online"
+                      ? `Pay $${service?.deposit} deposit & confirm`
+                      : "Reserve — pay in person"}
                 </button>
               </div>
               <p className="fine" style={{ margin: 0, fontSize: 13, color: "var(--taupe)", textAlign: "center" }}>
-                Free reschedule up to 48 hrs before. Deposit goes toward your total.
+                Free reschedule up to 48 hrs before.
+                {payMethod === "online" ? " Deposit goes toward your total." : " In-person payment is Zelle or cash only."}
               </p>
             </div>
           )}

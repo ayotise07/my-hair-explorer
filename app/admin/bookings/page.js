@@ -25,6 +25,8 @@ import {
 const BADGE = {
   confirmed: ["badge badge-confirmed", "Confirmed"],
   "deposit-paid": ["badge badge-deposit", "Deposit paid"],
+  "payment-pending": ["badge badge-reschedule", "Payment pending"],
+  "awaiting-checkout": ["badge badge-cancelled", "Awaiting card payment"],
   "reschedule-requested": ["badge badge-reschedule", "Reschedule req."],
   cancelled: ["badge badge-cancelled", "Cancelled"],
 };
@@ -417,7 +419,9 @@ export default function AdminBookings() {
   const dayFree = selectedClosed || !schedule ? [] : daySlots(schedule, selected).filter((s) => !takenTimes.has(s));
 
   const upcoming = (bookings || []).filter((b) => b.status !== "cancelled" && b.date >= iso(new Date()));
-  const deposits = upcoming.reduce((s, b) => s + (b.deposit || 0), 0);
+  const deposits = upcoming
+    .filter((b) => b.status === "deposit-paid" || b.payment)
+    .reduce((s, b) => s + (b.deposit || 0), 0);
 
   async function setStatus(booking, status, msg) {
     await setBookingStatus(booking, status);
@@ -505,6 +509,8 @@ export default function AdminBookings() {
                 <div className="s">
                   {b.serviceName}
                   {b.notes ? ` · ${b.notes}` : ""} · {b.phone}
+                  {b.paymentMethod === "in-person" ? " · pays Zelle/cash at visit" : ""}
+                  {b.paymentMethod === "online" && b.payment ? ` · $${b.payment.amount} paid by card` : ""}
                 </div>
               </div>
               <span className={cls}>{label}</span>
@@ -517,7 +523,15 @@ export default function AdminBookings() {
                     Reschedule
                   </button>
                 )}
-                {b.status !== "cancelled" && b.status !== "confirmed" && (
+                {b.status === "payment-pending" && (
+                  <button
+                    className="btn btn-green btn-sm"
+                    onClick={() => setStatus(b, "confirmed", `${b.client} marked paid & confirmed.`)}
+                  >
+                    Mark paid
+                  </button>
+                )}
+                {b.status !== "cancelled" && b.status !== "confirmed" && b.status !== "payment-pending" && (
                   <button className="btn btn-outline btn-sm" onClick={() => setStatus(b, "confirmed", `${b.client} confirmed.`)}>
                     Confirm
                   </button>
