@@ -13,7 +13,7 @@ import {
 
 const BADGE = {
   confirmed: ["badge badge-confirmed", "Confirmed"],
-  "deposit-paid": ["badge badge-deposit", "Deposit paid"],
+  "deposit-paid": ["badge badge-deposit", "Paid online"],
   "payment-pending": ["badge badge-reschedule", "Payment pending"],
   "awaiting-checkout": ["badge badge-cancelled", "Awaiting card payment"],
   "reschedule-requested": ["badge badge-reschedule", "Reschedule req."],
@@ -77,7 +77,7 @@ export default function AdminOverview() {
     }, 0);
   const deposits = upcoming
     .filter((b) => b.status === "deposit-paid" || b.payment)
-    .reduce((sum, b) => sum + (b.deposit || 0), 0);
+    .reduce((sum, b) => sum + (b.payment?.amount ?? b.deposit ?? 0), 0);
 
   const published = data.reviews.filter((r) => r.status === "published");
   const pending = data.reviews.filter((r) => r.status === "pending");
@@ -125,7 +125,7 @@ export default function AdminOverview() {
         <div className="stat-card">
           <div className="k">REVENUE · {now.toLocaleDateString("en-US", { month: "long" }).toUpperCase()}</div>
           <div className="v">${revenue.toLocaleString()}</div>
-          <div className="d">${deposits} in deposits held</div>
+          <div className="d">${deposits} collected online</div>
         </div>
         <div className="stat-card">
           <div className="k">AVERAGE RATING</div>

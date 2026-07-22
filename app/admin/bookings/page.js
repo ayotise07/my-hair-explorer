@@ -24,7 +24,7 @@ import {
 
 const BADGE = {
   confirmed: ["badge badge-confirmed", "Confirmed"],
-  "deposit-paid": ["badge badge-deposit", "Deposit paid"],
+  "deposit-paid": ["badge badge-deposit", "Paid online"],
   "payment-pending": ["badge badge-reschedule", "Payment pending"],
   "awaiting-checkout": ["badge badge-cancelled", "Awaiting card payment"],
   "reschedule-requested": ["badge badge-reschedule", "Reschedule req."],
@@ -421,7 +421,7 @@ export default function AdminBookings() {
   const upcoming = (bookings || []).filter((b) => b.status !== "cancelled" && b.date >= iso(new Date()));
   const deposits = upcoming
     .filter((b) => b.status === "deposit-paid" || b.payment)
-    .reduce((s, b) => s + (b.deposit || 0), 0);
+    .reduce((s, b) => s + (b.payment?.amount ?? b.deposit ?? 0), 0);
 
   async function setStatus(booking, status, msg) {
     await setBookingStatus(booking, status);
@@ -454,8 +454,8 @@ export default function AdminBookings() {
         <div>
           <h1>Bookings</h1>
           <p className="sub">
-            Week of {weekLabel} — {week.reduce((s, d) => s + d.count, 0)} appointments, ${deposits} in
-            deposits held.
+            Week of {weekLabel} — {week.reduce((s, d) => s + d.count, 0)} appointments, ${deposits}{" "}
+            collected online.
           </p>
         </div>
         <div style={{ display: "flex", gap: 10, flex: "none" }}>

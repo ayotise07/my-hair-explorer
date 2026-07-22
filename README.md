@@ -78,11 +78,12 @@ npm run dev        # http://localhost:3000
 
 Customers choose at the last booking step:
 
-- **Pay online** — the deposit is charged by card through **Stripe Checkout**. The server
-  (`app/api/checkout`) claims the slots and creates the booking as `awaiting-checkout`, then
-  redirects to Stripe; the webhook (`app/api/stripe-webhook`) marks it `deposit-paid` on success or
-  releases the slots if checkout expires (30 min) or is cancelled. The payment record (session,
-  amount, time) is stored on the booking.
+- **Pay online** — the full price is charged by card through **Stripe Checkout**. Only styles with
+  a fixed single-amount price (e.g. `$180`) offer this (`lib/pricing.js`); ranged (`$70–$150`),
+  "from $100" and quote pricing settle in person. The server (`app/api/checkout`) claims the slots
+  and creates the booking as `awaiting-checkout`, then redirects to Stripe; the webhook
+  (`app/api/stripe-webhook`) marks it paid on success or releases the slots if checkout expires
+  (30 min) or is cancelled. The payment record (session, amount, time) is stored on the booking.
 - **Pay in person** — the appointment is reserved immediately with status **`payment-pending`**
   (Zelle or cash only, stated in the flow and on the confirmation). The admin's Bookings page shows
   a "Payment pending" badge and a **Mark paid** button.

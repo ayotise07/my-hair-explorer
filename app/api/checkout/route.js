@@ -2,6 +2,7 @@
 import Stripe from "stripe";
 import { adminDb } from "@/lib/server/admin";
 import { coveredSlots, DEFAULT_SCHEDULE } from "@/lib/schedule";
+import { onlinePrice } from "@/lib/pricing";
 
 // Stripe Checkout for online deposits. Flow:
 //   POST   -> claim slots + create an `awaiting-checkout` booking + Checkout URL
@@ -44,8 +45,12 @@ export async function POST(request) {
     return NextResponse.json({ error: "Unknown service." }, { status: 400 });
   }
   const service = svcSnap.data();
-  if (!service.deposit || service.deposit <= 0) {
-    return NextResponse.json({ error: "This style has no online deposit — pay in person instead." }, { status: 400 });
+  const amount = onlinePrice(service);
+  if (!amount) {
+    return NextResponse.json(
+      { error: "This style's final price is set in person — pay at your appointment instead." },
+      { status: 400 }
+    );
   }
 
   const schedule = await loadSchedule();
@@ -99,10 +104,10 @@ export async function POST(request) {
         quantity: 1,
         price_data: {
           currency: "usd",
-          unit_amount: service.deposit * 100,
+          unit_amount: amount * 100,
           product_data: {
-            name: `Deposit — ${service.name}`,
-            description: `${date} at ${time} with Temmie. Deposit goes toward your $${service.priceFrom} total.`,
+            name: service.name,
+            description: `${date} at ${time} with Temmie — paid in full, nothing due at the appointment.`,
           },
         },
       },
@@ -135,16 +140,15 @@ export async function GET(request) {
   if (booking.status === "awaiting-checkout") {
     const session = await stripe.checkout.sessions.retrieve(sessionId);
     if (session.payment_status === "paid") {
-      await bookingRef.update({
-        status: "deposit-paid",
-        payment: {
-          provider: "stripe",
-          sessionId,
-          amount: booking.deposit,
-          paidAt: new Date(),
-        },
-      });
+      const payment = {
+        provider: "stripe",
+        sessionId,
+        amount: (session.amount_total || 0) / 100,
+        paidAt: new Date(),
+      };
+      await bookingRef.update({ status: "deposit-paid", payment });
       booking.status = "deposit-paid";
+      booking.payment = payment;
     } else {
       return NextResponse.json({ error: "Payment not completed yet." }, { status: 402 });
     }

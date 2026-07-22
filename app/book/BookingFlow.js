@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { doneBy, freeSlotsForDuration, isOpen } from "@/lib/schedule";
 import { createBooking, fetchSchedule, fetchTakenSlots } from "@/lib/data";
+import { onlinePrice } from "@/lib/pricing";
 
 const STEPS = ["Style", "Date & time", "Confirm"];
 const BOOKING_HORIZON_DAYS = 180;
@@ -194,6 +195,12 @@ export default function BookingFlow({ services, content }) {
     if (time && date && takenSets[date.slice(0, 7)] && !selectedSlots.includes(time)) setTime(null);
   }, [time, date, takenSets, selectedSlots]);
 
+  // ranged/quote-priced styles settle in person — no online charge
+  const onlineAmt = onlinePrice(service);
+  useEffect(() => {
+    if (payMethod === "online" && service && !onlineAmt) setPayMethod("in-person");
+  }, [payMethod, service, onlineAmt]);
+
   const popular = showAll ? services : services.slice(0, 3);
   const finish = time && service ? doneBy(time, service.hours) : "";
   const due = service ? Math.max(0, service.priceFrom - service.deposit) : 0;
@@ -322,11 +329,15 @@ export default function BookingFlow({ services, content }) {
                   <>
                     <div className="row">
                       <span>Paid today (card)</span>
-                      <strong className="bronze">${booking.deposit} deposit</strong>
+                      <strong className="bronze">${booking.payment?.amount ?? priceNum}</strong>
                     </div>
                     <div className="row">
                       <span>Due at appointment</span>
-                      <strong>${Math.max(0, priceNum - booking.deposit)}</strong>
+                      <strong>
+                        {Math.max(0, priceNum - (booking.payment?.amount ?? priceNum)) === 0
+                          ? "Nothing — paid in full"
+                          : `$${Math.max(0, priceNum - (booking.payment?.amount ?? priceNum))}`}
+                      </strong>
                     </div>
                   </>
                 )}
@@ -573,7 +584,7 @@ export default function BookingFlow({ services, content }) {
 
               <div className="field" role="radiogroup" aria-label="How would you like to pay?">
                 How would you like to pay?
-                {stripeEnabled && service?.deposit > 0 && (
+                {stripeEnabled && onlineAmt > 0 && (
                   <button
                     type="button"
                     role="radio"
@@ -582,10 +593,10 @@ export default function BookingFlow({ services, content }) {
                     onClick={() => setPayMethod("online")}
                   >
                     <span className="info">
-                      <strong>Pay ${service.deposit} deposit online</strong>
+                      <strong>Pay online — ${onlineAmt}</strong>
                       <span className="sub" style={{ display: "block", fontWeight: 400 }}>
-                        Credit / debit card, secure checkout via Stripe. The rest is due at your
-                        appointment.
+                        Full payment by credit / debit card, secure checkout via Stripe. Nothing due
+                        at your appointment.
                       </span>
                     </span>
                     {payMethod === "online" && <span className="check">✓</span>}
@@ -619,13 +630,15 @@ export default function BookingFlow({ services, content }) {
                       ? "Opening secure checkout…"
                       : "Confirming…"
                     : payMethod === "online"
-                      ? `Pay $${service?.deposit} deposit & confirm`
+                      ? `Pay $${onlineAmt} & confirm`
                       : "Reserve — pay in person"}
                 </button>
               </div>
               <p className="fine" style={{ margin: 0, fontSize: 13, color: "var(--taupe)", textAlign: "center" }}>
                 Free reschedule up to 48 hrs before.
-                {payMethod === "online" ? " Deposit goes toward your total." : " In-person payment is Zelle or cash only."}
+                {payMethod === "online"
+                  ? " You're paying in full — nothing due at the appointment."
+                  : " In-person payment is Zelle or cash only."}
               </p>
             </div>
           )}
@@ -658,11 +671,18 @@ export default function BookingFlow({ services, content }) {
                   <strong>{service.price}</strong>
                 </div>
                 <div className="row">
-                  <span>Deposit today</span>
-                  <strong className="bronze">${service.deposit}</strong>
+                  <span>Due today</span>
+                  <strong className="bronze">
+                    {payMethod === "online" && onlineAmt > 0 ? `$${onlineAmt}` : "$0"}
+                  </strong>
                 </div>
               </div>
-              <p className="fine">Free reschedule up to 48 hrs before.</p>
+              <p className="fine">
+                {payMethod === "online" && onlineAmt > 0
+                  ? "Paid in full online — nothing due at the appointment."
+                  : "Pay at your appointment — Zelle or cash only."}{" "}
+                Free reschedule up to 48 hrs before.
+              </p>
             </div>
           )}
         </aside>
