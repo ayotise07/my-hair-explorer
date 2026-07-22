@@ -19,8 +19,9 @@ env:
     availability:
       - BUILD
 
-  # App Check (reCAPTCHA v3) site key
-  - variable: NEXT_PUBLIC_RECAPTCHA_SITE_KEY
-    value: ""
-    availability:
-      - BUILD
+  # When you register App Check (reCAPTCHA v3), add its site key like this —
+  # an empty value fails validation, so only add it with a real key:
+  # - variable: NEXT_PUBLIC_RECAPTCHA_SITE_KEY
+  #   value: "6Le..."
+  #   availability:
+  #     - BUILD
