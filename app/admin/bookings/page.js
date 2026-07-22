@@ -13,12 +13,11 @@ import {
   unblockDay,
   unblockSlot,
 } from "@/lib/admin-data";
-import { fetchTakenSlots } from "@/lib/data";
+import { fetchSchedule, fetchTakenSlots } from "@/lib/data";
 import {
-  BASE_SLOTS,
-  CLOSED_DAYS,
-  coveredSlots,
+  daySlots,
   freeSlotsForDuration,
+  isOpen,
   nextOpenDays,
   timeToMinutes,
 } from "@/lib/schedule";
@@ -45,8 +44,8 @@ function startOfWeek(d) {
 
 // Date + time picker over the next 3 weeks of open days. Only offers start
 // times where a booking of `hours` fits entirely in free slots.
-function SlotPicker({ date, time, onPick, hours = 1, excludeSlotIds = [] }) {
-  const [days] = useState(() => nextOpenDays(21).filter((d) => d.open));
+function SlotPicker({ schedule, date, time, onPick, hours = 1, excludeSlotIds = [] }) {
+  const days = useMemo(() => nextOpenDays(schedule, 21).filter((d) => d.open), [schedule]);
   const [taken, setTaken] = useState(null);
   const excludeKey = excludeSlotIds.join(",");
 
@@ -61,7 +60,7 @@ function SlotPicker({ date, time, onPick, hours = 1, excludeSlotIds = [] }) {
   }, [days, excludeKey]);
 
   const options = taken
-    ? days.map((d) => ({ ...d, slots: freeSlotsForDuration(d.date, taken, hours) }))
+    ? days.map((d) => ({ ...d, slots: freeSlotsForDuration(schedule, d.date, taken, hours) }))
     : [];
   const selected = options.find((d) => d.date === date);
 
@@ -106,7 +105,7 @@ function SlotPicker({ date, time, onPick, hours = 1, excludeSlotIds = [] }) {
   );
 }
 
-function AddBookingModal({ services, onClose, onDone }) {
+function AddBookingModal({ schedule, services, onClose, onDone }) {
   const [form, setForm] = useState({ client: "", phone: "", notes: "", serviceId: services[0]?.id, date: null, time: null });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -120,6 +119,7 @@ function AddBookingModal({ services, onClose, onDone }) {
     setBusy(true);
     try {
       await adminCreateBooking({
+        schedule,
         service,
         date: form.date,
         time: form.time,
@@ -163,6 +163,7 @@ function AddBookingModal({ services, onClose, onDone }) {
           </select>
         </label>
         <SlotPicker
+          schedule={schedule}
           date={form.date}
           time={form.time}
           hours={services.find((s) => s.id === form.serviceId)?.hours}
@@ -186,7 +187,7 @@ function AddBookingModal({ services, onClose, onDone }) {
   );
 }
 
-function BlockTimeModal({ onClose, onDone }) {
+function BlockTimeModal({ schedule, onClose, onDone }) {
   const todayIso = iso(new Date());
   const [mode, setMode] = useState("days"); // 'days' | 'slot'
   const [pick, setPick] = useState({ date: null, time: null });
@@ -209,7 +210,7 @@ function BlockTimeModal({ onClose, onDone }) {
       if (!from) throw new Error("Pick at least a starting day.");
       if (to < from) throw new Error("The end day is before the start day.");
       if (from < todayIso) throw new Error("That range starts in the past.");
-      const { days } = await blockDateRange(from, to);
+      const { days } = await blockDateRange(schedule, from, to);
       onDone(`${days} day${days === 1 ? "" : "s"} blocked off — clients can't book them.`);
     } catch (err) {
       console.error(err);
@@ -273,7 +274,12 @@ function BlockTimeModal({ onClose, onDone }) {
             </p>
           </>
         ) : (
-          <SlotPicker date={pick.date} time={pick.time} onPick={(date, time) => setPick({ date, time })} />
+          <SlotPicker
+            schedule={schedule}
+            date={pick.date}
+            time={pick.time}
+            onPick={(date, time) => setPick({ date, time })}
+          />
         )}
         {error && <div className="error-box">{error}</div>}
         <div className="modal-acts">
@@ -289,7 +295,7 @@ function BlockTimeModal({ onClose, onDone }) {
   );
 }
 
-function RescheduleModal({ booking, onClose, onDone }) {
+function RescheduleModal({ schedule, booking, onClose, onDone }) {
   const [pick, setPick] = useState({ date: booking.date, time: booking.time });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -301,7 +307,7 @@ function RescheduleModal({ booking, onClose, onDone }) {
     }
     setBusy(true);
     try {
-      await rescheduleBooking(booking, pick.date, pick.time);
+      await rescheduleBooking(schedule, booking, pick.date, pick.time);
       onDone(`${booking.client} moved to ${pick.time}.`);
     } catch (err) {
       console.error(err);
@@ -318,14 +324,13 @@ function RescheduleModal({ booking, onClose, onDone }) {
           {booking.serviceName} — currently {booking.date} · {booking.time}.
         </p>
         <SlotPicker
+          schedule={schedule}
           date={pick.date}
           time={pick.time}
           hours={booking.hours}
           onPick={(date, time) => setPick({ date, time })}
           excludeSlotIds={
-            booking.slotIds?.length
-              ? booking.slotIds
-              : coveredSlots(booking.time, booking.hours).map((t) => `${booking.date}_${t}`)
+            booking.slotIds?.length ? booking.slotIds : [`${booking.date}_${booking.time}`]
           }
         />
         {error && <div className="error-box">{error}</div>}
@@ -344,6 +349,7 @@ function RescheduleModal({ booking, onClose, onDone }) {
 
 export default function AdminBookings() {
   const [bookings, setBookings] = useState(null);
+  const [schedule, setSchedule] = useState(null);
   const [services, setServices] = useState([]);
   const [weekSlots, setWeekSlots] = useState([]);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
@@ -364,6 +370,7 @@ export default function AdminBookings() {
 
   useEffect(() => {
     reload().catch(console.error);
+    fetchSchedule().then(setSchedule).catch(console.error);
     fetchAllServices().then((s) => setServices(s.filter((x) => x.visible))).catch(console.error);
   }, [reload]);
 
@@ -385,7 +392,7 @@ export default function AdminBookings() {
       const d = new Date(weekStart);
       d.setDate(weekStart.getDate() + i);
       const dateIso = iso(d);
-      const closed = CLOSED_DAYS.includes(d.getDay());
+      const closed = schedule ? !isOpen(schedule, dateIso) : false;
       const count = (bookings || []).filter((b) => b.date === dateIso && b.status !== "cancelled").length;
       return {
         date: dateIso,
@@ -393,10 +400,10 @@ export default function AdminBookings() {
         num: d.getDate(),
         closed,
         count,
-        label: closed ? (d.getDay() === 0 ? "Closed" : "Day off") : `${count} appt${count === 1 ? "" : "s"}`,
+        label: closed ? "Closed" : `${count} appt${count === 1 ? "" : "s"}`,
       };
     });
-  }, [weekStart, bookings]);
+  }, [weekStart, bookings, schedule]);
 
   const dayBookings = (bookings || [])
     .filter((b) => b.date === selected)
@@ -406,8 +413,8 @@ export default function AdminBookings() {
   // slot markers carry the full duration coverage of each booking
   const takenTimes = new Set(weekSlots.filter((s) => s.date === selected).map((s) => s.time));
   const selectedDate = new Date(selected + "T00:00:00");
-  const selectedClosed = CLOSED_DAYS.includes(selectedDate.getDay());
-  const dayFree = selectedClosed ? [] : BASE_SLOTS.filter((s) => !takenTimes.has(s));
+  const selectedClosed = schedule ? !isOpen(schedule, selected) : false;
+  const dayFree = selectedClosed || !schedule ? [] : daySlots(schedule, selected).filter((s) => !takenTimes.has(s));
 
   const upcoming = (bookings || []).filter((b) => b.status !== "cancelled" && b.date >= iso(new Date()));
   const deposits = upcoming.reduce((s, b) => s + (b.deposit || 0), 0);
@@ -430,7 +437,7 @@ export default function AdminBookings() {
     setWeekStart(next);
   }
 
-  if (!bookings) return <p>Loading…</p>;
+  if (!bookings || !schedule) return <p>Loading…</p>;
 
   const weekLabel = weekStart.toLocaleDateString("en-US", { month: "long", day: "numeric" });
   const selectedLabel = selectedDate
@@ -582,10 +589,12 @@ export default function AdminBookings() {
         )}
       </div>
 
-      {modal === "add" && <AddBookingModal services={services} onClose={() => closeModal()} onDone={closeModal} />}
-      {modal === "block" && <BlockTimeModal onClose={() => closeModal()} onDone={closeModal} />}
+      {modal === "add" && (
+        <AddBookingModal schedule={schedule} services={services} onClose={() => closeModal()} onDone={closeModal} />
+      )}
+      {modal === "block" && <BlockTimeModal schedule={schedule} onClose={() => closeModal()} onDone={closeModal} />}
       {modal && typeof modal === "object" && (
-        <RescheduleModal booking={modal} onClose={() => closeModal()} onDone={closeModal} />
+        <RescheduleModal schedule={schedule} booking={modal} onClose={() => closeModal()} onDone={closeModal} />
       )}
       {toast && <div className="toast">{toast}</div>}
     </>

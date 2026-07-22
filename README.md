@@ -69,7 +69,10 @@ npm run dev        # http://localhost:3000
   `status == "published"` — the composite index for services ships in `firestore.indexes.json`.
 - Photo uploads go to Storage under `photos/` (images only, ≤10 MB) with download URLs stored on the
   Firestore doc.
-- Studio schedule (start times, closed Thu/Sun) lives in `lib/schedule.js`.
+- Weekly hours live in `content/schedule` (edited under Admin → Availability): per-weekday open flag
+  plus start/end times. Start times generate every 90 minutes inside the window, and a style is only
+  offered if it finishes by closing. Bookings claim every start slot they overlap, so long styles
+  block their whole duration. One-off time off is blocked per-slot or per-day-range from Bookings.
 
 ## Notes
 

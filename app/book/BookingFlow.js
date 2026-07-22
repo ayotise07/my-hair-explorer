@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { doneBy, freeSlotsForDuration, nextOpenDays } from "@/lib/schedule";
-import { createBooking, fetchTakenSlots } from "@/lib/data";
+import { createBooking, fetchSchedule, fetchTakenSlots } from "@/lib/data";
 
 const STEPS = ["Style", "Date & time", "Confirm"];
 
@@ -21,6 +21,7 @@ export default function BookingFlow({ services, content }) {
     preselect && services.some((s) => s.id === preselect) ? preselect : services[0]?.id
   );
   const [showAll, setShowAll] = useState(false);
+  const [schedule, setSchedule] = useState(null);
   const [taken, setTaken] = useState(null);
   const [date, setDate] = useState(null);
   const [time, setTime] = useState(null);
@@ -32,10 +33,15 @@ export default function BookingFlow({ services, content }) {
   const [booking, setBooking] = useState(null);
 
   const service = useMemo(() => services.find((s) => s.id === serviceId), [services, serviceId]);
-  const openDays = useMemo(() => nextOpenDays(14), []);
+  const openDays = useMemo(() => (schedule ? nextOpenDays(schedule, 14) : null), [schedule]);
   const tel = content.phone.replace(/\D/g, "");
 
+  useEffect(() => {
+    fetchSchedule().then(setSchedule).catch((err) => console.error("schedule:", err));
+  }, []);
+
   const loadAvailability = useCallback(async () => {
+    if (!openDays) return null;
     const t = await fetchTakenSlots(openDays[0].date, openDays[openDays.length - 1].date);
     setTaken(t);
     return t;
@@ -45,15 +51,15 @@ export default function BookingFlow({ services, content }) {
     loadAvailability().catch((err) => console.error("availability:", err));
   }, [loadAvailability]);
 
-  // Free start times depend on the chosen style's duration: a 5-hr set only
-  // offers starts where all covered slots are open.
+  // Free start times depend on the owner's weekly hours and the chosen
+  // style's duration: a 5-hr set only offers starts where it fits entirely.
   const days = useMemo(() => {
-    if (!taken) return null;
+    if (!taken || !openDays) return null;
     return openDays.map((d) => ({
       ...d,
-      slots: d.open ? freeSlotsForDuration(d.date, taken, service?.hours) : [],
+      slots: d.open ? freeSlotsForDuration(schedule, d.date, taken, service?.hours) : [],
     }));
-  }, [openDays, taken, service]);
+  }, [openDays, schedule, taken, service]);
 
   const selectedDay = useMemo(() => days?.find((d) => d.date === date), [days, date]);
 
@@ -80,6 +86,7 @@ export default function BookingFlow({ services, content }) {
     setSubmitting(true);
     try {
       const data = await createBooking({
+        schedule,
         service,
         date,
         time,

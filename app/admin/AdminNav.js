@@ -13,6 +13,7 @@ const LINKS = [
   { href: "/admin/faq", label: "FAQ" },
   { href: "/admin/reviews", label: "Reviews" },
   { href: "/admin/bookings", label: "Bookings" },
+  { href: "/admin/availability", label: "Availability" },
 ];
 
 export default function AdminNav() {
